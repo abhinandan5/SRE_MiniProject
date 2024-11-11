@@ -1,95 +1,198 @@
-const recordTab = document.querySelector("#tab");
-const recordScreen = document.querySelector("#screen");
+const recordTabButton = document.querySelector("#tab");
+const recordScreenButton = document.querySelector("#screen");
+const toggleCameraButton = document.querySelector("#toggleCamera");
+const toggleMicButton = document.querySelector("#mic");
 
+let micStream = null; // Track microphone stream
+let isMicOn = false; // Track mic state
+
+// Check and return recording state from storage
+const checkRecordingState = async () => {
+  const { recording = false, type = "" } = await chrome.storage.local.get([
+    "recording",
+    "type",
+  ]);
+  return [recording, type];
+};
+
+// Update button text based on recording state
+const updateRecordingText = (button, isRecording) => {
+  button.innerText = isRecording
+    ? "Stop Recording"
+    : button.id === "tab"
+    ? "Record Tab"
+    : "Record Screen";
+};
+
+// Inject camera script into the tab
 const injectCamera = async () => {
-  // inject the Content script into the Current page
-  const tab = await chrome.tabs.query({ active: true, currentWindow: true });
+  try {
+    const [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
 
-  if (!tab) return;
-
-  const tabId = tab[0].id;
-  console.log("Inject into Tab", tabId);
-
-  await chrome.scripting.executeScript({
-    // content.js is the file that will be injected
-    files: ["content.js"],
-    target: { tabId },
-  });
-};
-
-const removeCamera = async () => {
-  // inject the content script into the current page
-  const tab = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
-
-  const tabId = tab[0].id;
-  console.log("Inject into the Tab", tabId);
-  await chrome.scripting.executeScript({
-    // content.js is the file that will be injected
-    func: () => {
-      const camera = document.querySelector("#ab-camera");
-
-      if (!camera) return;
-
-      document.querySelector("#ab-camera").style.display = "none";
-    },
-    target: { tabId },
-  });
-};
-
-// check chrome storage if recording is on
-const checkRecording = async () => {
-  const recording = await chrome.storage.local.get(["recording", "type"]);
-  const recordingStatus = recording.recording || false;
-  const recordingType = recording.type || "";
-  console.log("recording status", recordingStatus, recordingType);
-  return [recordingStatus, recordingType];
-};
-
-const init = async () => {
-  const recordingState = await checkRecording();
-
-  console.log("Recording State", recordingState);
-
-  if (recordingState[0] === true) {
-    if (recordingState[1] === "tab") {
-      recordTab.innerText = "Stop Recording";
-    } else {
-      recordScreen.innerText = "Stop Recording";
+    if (!activeTab?.id) {
+      console.error("Active tab not found.");
+      return;
     }
+
+    await chrome.scripting.executeScript({
+      files: ["content.js"],
+      target: { tabId: activeTab.id },
+    });
+  } catch (error) {
+    console.error("Error injecting camera:", error);
+  }
+};
+
+// Remove camera from the tab
+// const removeCamera = async () => {
+//   const [activeTab] = await chrome.tabs.query({
+//     active: true,
+//     currentWindow: true,
+//   });
+//   if (activeTab?.id) {
+//     await chrome.scripting.executeScript({
+//       func: () => {
+//         const camera = document.querySelector("#ab-camera");
+//         if (camera) camera.style.display = "none";
+//       },
+//       target: { tabId: activeTab.id },
+//     });
+//     console.log("Camera removed from tab.");
+//   }
+// };
+
+// Remove camera from the tab and stop the camera stream
+const removeCamera = async () => {
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  if (activeTab?.id) {
+    await chrome.scripting.executeScript({
+      func: () => {
+        const camera = document.querySelector("#ab-camera");
+        if (camera) {
+          // Stop the camera stream if it's active
+          const stream = camera.srcObject;
+          if (stream) {
+            stream.getTracks().forEach((track) => track.stop());
+          }
+          // Remove the camera element from the DOM
+          camera.remove();
+        }
+      },
+      target: { tabId: activeTab.id },
+    });
+    console.log("Camera removed from tab.");
+  }
+};
+
+// Start the microphone
+const startMic = async () => {
+  try {
+    if (isMicOn) return;
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    console.log("Microphone started");
+    isMicOn = true;
+    toggleMicButton.classList.add("active");
+    toggleMicButton.innerText = "ON";
+  } catch (error) {
+    console.error("Error starting mic:", error);
+    alert("Could not access microphone.");
+  }
+};
+
+// Stop the microphone
+const stopMic = async () => {
+  if (micStream === null) return;
+  console.log("mic here!!!", micStream);
+  micStream.getAudioTracks().forEach((track) => track.stop());
+  micStream = null;
+  console.log("Microphone stopped");
+  isMicOn = false;
+  toggleMicButton.classList.remove("active");
+  toggleMicButton.innerText = "OFF";
+};
+
+// Toggle recording on/off and update the UI accordingly
+const toggleRecording = async (recordingType) => {
+  const [isRecording, currentType] = await checkRecordingState();
+  const buttonToToggle =
+    recordingType === "tab" ? recordTabButton : recordScreenButton;
+
+  if (isRecording && currentType === recordingType) {
+    chrome.runtime.sendMessage({ type: "stop-recording" });
+    updateRecordingText(buttonToToggle, false);
+    removeCamera();
+  } else if (!isRecording) {
+    chrome.runtime.sendMessage({ type: "start-recording", recordingType });
+    updateRecordingText(buttonToToggle, true);
+    injectCamera();
+  }
+  window.close();
+};
+
+// const toggleRecording = async (recordingType) => {
+//   const [isRecording] = await checkRecordingState();
+//   const buttonToToggle =
+//     recordingType === "tab" ? recordTabButton : recordScreenButton;
+
+//   if (isRecording) {
+//     chrome.runtime.sendMessage({ type: "stop-recording" });
+//     updateRecordingText(buttonToToggle, false);
+//     removeCamera();
+//   } else {
+//     chrome.runtime.sendMessage({ type: "start-recording", recordingType });
+//     updateRecordingText(buttonToToggle, true);
+//     injectCamera();
+//   }
+//   window.close();
+// };
+
+// Initialize event listeners for buttons
+const initializeButtons = async () => {
+  const [isRecording, recordingType] = await checkRecordingState();
+
+  // Set initial button text based on recording state
+  updateRecordingText(recordTabButton, isRecording && recordingType === "tab");
+  updateRecordingText(
+    recordScreenButton,
+    isRecording && recordingType === "screen"
+  );
+
+  // Set initial states for Camera and Mic as "ON"
+  toggleCameraButton.classList.add("active");
+  toggleCameraButton.innerText = "ON";
+  injectCamera(); // Inject camera at start
+
+  // Start mic on initialization (ensure mic is on initially)
+  if (!micStream) {
+    await startMic();
   }
 
-  const updateRecording = async (type) => {
-    console.log("Start Recording", type);
+  // Event listeners for record buttons
+  recordTabButton.addEventListener("click", () => toggleRecording("tab"));
+  recordScreenButton.addEventListener("click", () => toggleRecording("screen"));
 
-    const recordingState = await checkRecording();
-
-    if (recordingState[0] === true) {
-      // stop recording
-      chrome.runtime.sendMessage({ type: "stop-recording" });
-      removeCamera();
-    } else {
-      //send message to service worker to start recording
-      chrome.runtime.sendMessage({
-        type: "start-recording",
-        recordingType: type,
-      });
-      injectCamera();
-    }
-
-    //close the popup
-    window.close();
-  };
-
-  recordTab.addEventListener("click", async () => {
-    console.log("updateRecording TAB clicked");
-    updateRecording("tab");
+  // Camera toggle button functionality
+  toggleCameraButton.addEventListener("click", () => {
+    const isActive = toggleCameraButton.classList.toggle("active");
+    toggleCameraButton.innerText = isActive ? "ON" : "OFF";
+    isActive ? injectCamera() : removeCamera();
   });
 
-  recordScreen.addEventListener("click", async () => {
-    console.log("updateRecording  SCREEN clicked");
-    updateRecording("screen");
+  // Mic toggle button functionality
+  toggleMicButton.addEventListener("click", () => {
+    if (isMicOn) {
+      stopMic(); // Stop mic if it's currently on
+    } else {
+      startMic(); // Start mic if it's currently off
+    }
   });
 };
 
-init();
+// Initialize popup when loaded
+document.addEventListener("DOMContentLoaded", initializeButtons);
